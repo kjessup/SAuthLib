@@ -66,6 +66,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		try db.create(AccessToken.self, policy: .reconcileTable).index(unique: true, \.provider, \.token, \.aliasId)
 		try db.create(MobileDeviceId.self, policy: .reconcileTable).index(unique: true, \.deviceId, \.aliasId)
 		try db.create(PasswordResetToken.self, primaryKey: \.aliasId, policy: .reconcileTable)
+		try db.create(Audit.self, policy: .reconcileTable)
 	}
 	private func pwHash(password: String) -> (hexSalt: String, hexHash: String)? {
 		let saltBytes = Array<UInt8>(randomCount: 32)
@@ -111,12 +112,12 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let id = UUID()
 		var account: Account?
 		guard let (salt, hash) = pwHash(password: password) else {
-			throw SAuthError(description: "Invalid password.")
+			try badAudit(db: db, alias: loweredAddress, action: "create account", error: "Failure hashing password.")
 		}
 		try db.transaction {
 			let existingCount = try whereMatch.count()
 			guard existingCount == 0 else {
-				throw SAuthError(description: "Alias already exists.")
+				try badAudit(db: db, alias: loweredAddress, action: "create account", error: "Alias already exists.")
 			}
 			let acc = Account(id: id, flags: 0, createdAt: now, meta: AccountPublicMeta())
 			account = acc
@@ -125,12 +126,14 @@ public struct SAuth<P: SAuthConfigProvider> {
 							  account: id,
 							  priority: 1,
 							  flags: AliasFlags.provisional.rawValue,
-							  pwSalt: salt, pwHash: hash)
+							  pwSalt: salt, pwHash: hash,
+							  defaultLocale: nil)
 			try table.insert(alias)
 		}
 		let privateKey = try provider.getServerPrivateKey()
 		let claim = newClaim(loweredAddress, accoundId: account?.id)
 		let token = try JWTCreator(payload: claim).sign(alg: jwtAlgo, key: privateKey)
+		goodAudit(db: db, alias: loweredAddress, action: "create account", account: account?.id)
 		return TokenAcquiredResponse(token: token, account: account)
 	}
 
@@ -140,18 +143,19 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let db = try getDB()
 		let table = db.table(Alias.self)
 		guard let alias = try table.where(\Alias.address == loweredAddress).first() else {
-			throw SAuthError(description: "Bad alias.")
+			try badAudit(db: db, alias: loweredAddress, action: "login", error: "Bad alias.")
 		}
 		guard let hash = alias.pwHash, let salt = alias.pwSalt else {
-			throw SAuthError(description: "This alias does not have a password.")
+			try badAudit(db: db, alias: loweredAddress, action: "login", error: "This alias does not have a password.")
 		}
 		guard pwValidate(password: password, hexSalt: salt, hexHash: hash) else {
-			throw SAuthError(description: "Bad password.")
+			try badAudit(db: db, alias: loweredAddress, action: "login", error: "Bad password.")
 		}
 		let account = try db.table(Account.self).where(\Account.id == alias.account).first()
 		let privateKey = try provider.getServerPrivateKey()
 		let claim = newClaim(loweredAddress, accoundId: account?.id)
 		let token = try JWTCreator(payload: claim).sign(alg: jwtAlgo, key: privateKey)
+		goodAudit(db: db, alias: loweredAddress, action: "login", account: account?.id)
 		return TokenAcquiredResponse(token: token, account: account)
 	}
 	
@@ -162,17 +166,18 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let table = db.table(Alias.self)
 		let whereMatch = table.where(\Alias.address == loweredAddress)
 		guard let (salt, hash) = pwHash(password: password) else {
-			throw SAuthError(description: "Invalid password.")
+			try badAudit(db: db, alias: loweredAddress, action: "change password", error: "Failure hashing password.")
 		}
 		let alias: Alias = try db.transaction {
 			guard let alias = try whereMatch.first() else {
-				throw SAuthError(description: "Bad account alias.")
+				try badAudit(db: db, alias: loweredAddress, action: "change password", error: "Bad account alias.")
 			}
 			let updated = Alias(address: alias.address,
 							  account: alias.account,
 							  priority: alias.priority,
 							  flags: alias.flags,
-							  pwSalt: salt, pwHash: hash)
+							  pwSalt: salt, pwHash: hash,
+							  defaultLocale: nil)
 			try whereMatch.update(updated, setKeys: \.pwSalt, \.pwHash)
 			return updated
 		}
@@ -180,6 +185,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let privateKey = try provider.getServerPrivateKey()
 		let claim = newClaim(loweredAddress, accoundId: account?.id)
 		let token = try JWTCreator(payload: claim).sign(alg: jwtAlgo, key: privateKey)
+		goodAudit(db: db, alias: loweredAddress, action: "change password", account: account?.id)
 		return TokenAcquiredResponse(token: token, account: account)
 	}
 	
@@ -195,13 +201,14 @@ public struct SAuth<P: SAuthConfigProvider> {
 		}
 		let table = db.table(Alias.self)
 		guard let alias = try table.where(\Alias.address == id).first() else {
-			throw SAuthError(description: "Bad alias.")
+			try badAudit(db: db, alias: id, action: "validate token", error: "Bad alias.")
 		}
 		let publicKey = try provider.getServerPublicKey()
 		try valid.verify(algo: jwtAlgo, key: publicKey)
 		guard exp >= Date().sauthTimeInterval else {
-			throw SAuthError(description: "Token expired.")
+			try badAudit(db: db, alias: id, action: "validate token", error: "Token expired.")
 		}
+		// no good audit for this
 		return alias
 	}
 	
@@ -222,24 +229,26 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let table = db.table(Alias.self)
 		let whereMatch = table.where(\Alias.address == loweredAddress)
 		guard let (salt, hash) = pwHash(password: password) else {
-			throw SAuthError(description: "Invalid password.")
+			try badAudit(db: db, alias: loweredAddress, action: "add alias", error: "Failure hashing password.")
 		}
 		try db.transaction {
 			let existingCount = try whereMatch.count()
 			guard existingCount == 0 else {
-				throw SAuthError(description: "Alias already exists.")
+				try badAudit(db: db, alias: loweredAddress, action: "add alias", error: "Alias already exists.")
 			}
 			let alias = Alias(address: loweredAddress,
 							  account: accountId,
 							  priority: 0,
 							  flags: AliasFlags.provisional.rawValue,
-							  pwSalt: salt, pwHash: hash)
+							  pwSalt: salt, pwHash: hash,
+							  defaultLocale: nil)
 			try table.insert(alias)
 		}
 		let account = try db.table(Account.self).where(\Account.id == accountId).first()
 		let privateKey = try provider.getServerPrivateKey()
 		let claim = newClaim(loweredAddress, accoundId: account?.id)
 		let token = try JWTCreator(payload: claim).sign(alg: jwtAlgo, key: privateKey)
+		goodAudit(db: db, alias: loweredAddress, action: "add alias", account: account?.id)
 		return TokenAcquiredResponse(token: token, account: account)
 	}
 
@@ -252,6 +261,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		try table
 			.where(\Alias.address == loweredAddress && \Alias.account == existing.account)
 			.delete()
+		goodAudit(db: db, alias: loweredAddress, action: "remove alias", account: existing.account)
 	}
 	
 	// list account aliases
@@ -259,6 +269,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let db = try getDB()
 		let existing = try validateToken(token, db: db)
 		let table = db.table(AliasBrief.self)
+		// no audit
 		return try table
 			.where(\AliasBrief.account == existing.account)
 			.select().map { $0 }
@@ -271,6 +282,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let account = try db.table(Account.self)
 			.where(\Account.id == `for`)
 			.first()
+		// no audit
 		return account?.meta
 	}
 	
@@ -281,6 +293,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let account = try db.table(Account.self)
 			.where(\Account.id == me.account)
 			.first()
+		// no audit
 		return account?.meta
 	}
 	
@@ -292,6 +305,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		try db.table(Account.self)
 			.where(\Account.id == id)
 			.update(newAcc, setKeys: \.meta)
+		goodAudit(db: db, alias: "*", action: "set meta", account: id)
 	}
 	
 	public func createOrLogIn(provider: String,
@@ -331,7 +345,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		try db.transaction {
 			let existingCount = try table.where(\Alias.address == loweredAddress).count()
 			guard existingCount == 0 else {
-				throw SAuthError(description: "Alias already exists.")
+				try badAudit(db: db, alias: loweredAddress, action: "create account", provider: provider, error: "Alias already exists.")
 			}
 			let acc = Account(id: id, flags: 0, createdAt: now, meta: meta)
 			account = acc
@@ -340,7 +354,8 @@ public struct SAuth<P: SAuthConfigProvider> {
 							  account: id,
 							  priority: 1,
 							  flags: AliasFlags.provisional.rawValue,
-							  pwSalt: nil, pwHash: nil)
+							  pwSalt: nil, pwHash: nil,
+							  defaultLocale: nil)
 			try table.insert(alias)
 		}
 		let tokensTable = db.table(AccessToken.self)
@@ -354,6 +369,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let privateKey = try self.provider.getServerPrivateKey()
 		let claim = newClaim(loweredAddress, accoundId: account?.id, oauthProvider: provider, oauthAccessToken: accessToken)
 		let token = try JWTCreator(payload: claim).sign(alg: jwtAlgo, key: privateKey)
+		goodAudit(db: db, alias: loweredAddress, action: "create account", account: account?.id, provider: provider)
 		return TokenAcquiredResponse(token: token, account: account)
 	}
 	
@@ -366,14 +382,14 @@ public struct SAuth<P: SAuthConfigProvider> {
 	}
 	
 	func logIn(provider: String,
-					  accessToken: String,
-					  address: String,
-					  db: DB) throws -> TokenAcquiredResponse {
+			   accessToken: String,
+			   address: String,
+			   db: DB) throws -> TokenAcquiredResponse {
 		let loweredAddress = address.lowercased()
 		let db = try getDB()
 		let table = db.table(Alias.self)
 		guard let alias = try table.where(\Alias.address == loweredAddress).first() else {
-			throw SAuthError(description: "Bad account alias.")
+			try badAudit(db: db, alias: loweredAddress, action: "login", error: "Bad account alias.")
 		}
 		let tokensTable = db.table(AccessToken.self)
 		try db.transaction {
@@ -395,6 +411,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let privateKey = try self.provider.getServerPrivateKey()
 		let claim = newClaim(loweredAddress, accoundId: account?.id, oauthProvider: provider, oauthAccessToken: accessToken)
 		let token = try JWTCreator(payload: claim).sign(alg: jwtAlgo, key: privateKey)
+		goodAudit(db: db, alias: loweredAddress, action: "login", account: account?.id)
 		return TokenAcquiredResponse(token: token, account: account)
 	}
 	
@@ -403,9 +420,30 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let db = try getDB()
 		let table = db.table(Account.self)
 		guard let account = try table.where(\Account.id == val.account).first() else {
-			throw SAuthError(description: "Bad account.")
+			try badAudit(db: db, alias: val.address, action: "get account", account: val.account, error: "Bad account.")
 		}
+		// no audit
 		return account
+	}
+	
+	func goodAudit(db: DB,
+			   alias: String,
+			   action: String,
+			   account: UUID? = nil,
+			   provider: String? = nil) {
+		let audit = Audit(alias: alias, action: action, account: account, provider: provider, error: nil, attemptedAt: Date().sauthTimeInterval)
+		_ = try? db.table(Audit.self).insert(audit)
+	}
+	
+	func badAudit(db: DB,
+			   alias: String,
+			   action: String,
+			   account: UUID? = nil,
+			   provider: String? = nil,
+			   error: String) throws -> Never {
+		let audit = Audit(alias: alias, action: action, account: account, provider: provider, error: error, attemptedAt: Date().sauthTimeInterval)
+		try db.table(Audit.self).insert(audit)
+		throw SAuthError(description: error)
 	}
 }
 
