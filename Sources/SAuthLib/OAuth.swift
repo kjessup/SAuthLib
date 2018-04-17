@@ -28,7 +28,7 @@ public struct OAuthHandlers<S: SAuthConfigProvider> {
 	
 	public func oauthReturnHandler(request: HTTPRequest, response: HTTPResponse) {
 		guard let uri = try? sauthDB.getURI(.oauthRedirect) else {
-			return response.setBody(string: "URIs not configiured.")
+			return response.setBody(string: "URIs not configured.")
 				.completed(status: .badRequest)
 		}
 		let provider = request.urlVariables["provider"] ?? ""

@@ -249,3 +249,8 @@ extension SAuthHandlers {
 	}
 }
 
+extension SAuthHandlers {
+	public func validateAlias(request: HTTPRequest, response: HTTPResponse) {
+		
+	}
+}

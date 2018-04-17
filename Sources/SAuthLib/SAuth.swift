@@ -15,6 +15,12 @@ public enum AliasFlags: UInt {
 	case inprogress = 0x02
 }
 
+extension Alias {
+	var provisional: Bool {
+		return 0 != (flags & AliasFlags.provisional.rawValue)
+	}
+}
+
 extension AliasBrief: TableNameProvider {
 	public static var tableName = Alias.CRUDTableName
 }
@@ -44,6 +50,7 @@ public protocol SAuthConfigProvider {
 	
 	// authToken will be URI-safe
 	func sendEmailPasswordReset(authToken: String, account: Account, alias: AliasBrief) throws
+	func sendEmailValidation(authToken: String, account: Account, alias: AliasBrief) throws
 	
 	func getTemplatePath(_ key: TemplateKey) throws -> String
 	func getURI(_ key: URIKey) throws -> String
@@ -91,15 +98,18 @@ public struct SAuth<P: SAuthConfigProvider> {
 		}
 		return compareHexHash == hexHash		
 	}
-	private func newClaim(_ address: String, accoundId: UUID?, oauthProvider: String? = nil, oauthAccessToken: String? = nil) -> TokenClaim {
+	private func newClaim(_ address: String,
+						  accoundId: UUID?,
+						  oauthProvider: String? = nil,
+						  oauthAccessToken: String? = nil) -> TokenClaim {
 		let now = Date().sauthTimeInterval
 		return TokenClaim(issuer: "sauth",
-							   subject: address,
-							   expiration: now + tokenExpirationSeconds,
-							   issuedAt: now,
-							   accountId: accoundId,
-							   oauthProvider: oauthProvider,
-							   oauthAccessToken: oauthAccessToken)
+						   subject: address,
+						   expiration: now + tokenExpirationSeconds,
+						   issuedAt: now,
+						   accountId: accoundId,
+						   oauthProvider: oauthProvider,
+						   oauthAccessToken: oauthAccessToken)
 	}
 	
 	// create account
@@ -145,6 +155,9 @@ public struct SAuth<P: SAuthConfigProvider> {
 		guard let alias = try table.where(\Alias.address == loweredAddress).first() else {
 			try badAudit(db: db, alias: loweredAddress, action: "login", error: "Bad alias.")
 		}
+		guard !alias.provisional else {
+			try badAudit(db: db, alias: loweredAddress, action: "login", error: "This alias has not been validated.")
+		}
 		guard let hash = alias.pwHash, let salt = alias.pwSalt else {
 			try badAudit(db: db, alias: loweredAddress, action: "login", error: "This alias does not have a password.")
 		}
@@ -180,6 +193,9 @@ public struct SAuth<P: SAuthConfigProvider> {
 							  defaultLocale: nil)
 			try whereMatch.update(updated, setKeys: \.pwSalt, \.pwHash)
 			return updated
+		}
+		guard !alias.provisional else {
+			try badAudit(db: db, alias: loweredAddress, action: "change password", error: "This alias has not been validated.")
 		}
 		let account = try db.table(Account.self).where(\Account.id == alias.account).first()
 		let privateKey = try provider.getServerPrivateKey()
@@ -390,6 +406,9 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let table = db.table(Alias.self)
 		guard let alias = try table.where(\Alias.address == loweredAddress).first() else {
 			try badAudit(db: db, alias: loweredAddress, action: "login", error: "Bad account alias.")
+		}
+		guard 0 == (alias.flags & AliasFlags.provisional.rawValue) else {
+			try badAudit(db: db, alias: loweredAddress, action: "login", error: "This alias has not been validated.")
 		}
 		let tokensTable = db.table(AccessToken.self)
 		try db.transaction {
