@@ -41,15 +41,34 @@ public struct PasswordResetToken: Codable {
 	let expiration: Int
 }
 
+public struct AccountValidationToken: Codable {
+	let aliasId: String
+	let authId: String
+	let createdAt: Int
+}
+
+extension AliasBrief {
+	init(_ alias: Alias) {
+		self.init(address: alias.address,
+				  account: alias.account,
+				  priority: alias.priority,
+				  flags: alias.flags,
+				  defaultLocale: alias.defaultLocale)
+	}
+}
+
 public struct SAuthHandlers<S: SAuthConfigProvider> {
 	let sauthDB: S
 	public init(_ s: S) {
 		sauthDB = s
 	}
-	public func register(request: HTTPRequest) throws -> TokenAcquiredResponse {
+	public func register(request: HTTPRequest) throws -> AliasBrief {
 		let rrequest: AuthAPI.RegisterRequest = try request.decode()
-		let tokenResponse = try SAuth(sauthDB).createAccount(address: rrequest.email, password: rrequest.password)
-		return tokenResponse
+		let (account, alias) = try SAuth(sauthDB).createAccount(address: rrequest.email, password: rrequest.password)
+		let token = try addAliasValidationToken(address: alias.address, db: try sauthDB.getDB())
+		let aliasBrief = AliasBrief(alias)
+		try sauthDB.sendEmailValidation(authToken: token, account: account, alias: aliasBrief)
+		return aliasBrief
 	}
 	public func login(request: HTTPRequest) throws -> TokenAcquiredResponse {
 		let rrequest: AuthAPI.LoginRequest = try request.decode()
@@ -115,6 +134,14 @@ public struct SAuthHandlers<S: SAuthConfigProvider> {
 		}
 		return EmptyReply()
 	}
+	private func addAliasValidationToken(address loweredAddress: String, db: Database<S.DBConfig>) throws -> String {
+		let authId = UUID().uuidString
+		let table = db.table(AccountValidationToken.self)
+		try table.where(\AccountValidationToken.aliasId == loweredAddress).delete()
+		let token = AccountValidationToken(aliasId: loweredAddress, authId: authId, createdAt: Date().sauthTimeInterval)
+		try table.insert(token)
+		return authId
+	}
 }
 
 extension SAuthHandlers {
@@ -126,6 +153,7 @@ extension SAuthHandlers {
 			let tempErr = try? sauthDB.getTemplatePath(.passwordResetError) else {
 				return response.setBody(string: "Templates not configured.").completed(status: .badRequest)
 		}
+		response.setHeader(.contentType, value: "text/html")
 		do {
 			let db = try sauthDB.getDB()
 			let table = db.table(PasswordResetToken.self)
@@ -157,8 +185,49 @@ extension SAuthHandlers {
 			let tempErr = try? sauthDB.getTemplatePath(.passwordResetError) else {
 				return response.setBody(string: "Templates not configured.").completed(status: .badRequest)
 		}
+		response.setHeader(.contentType, value: "text/html")
 		do {
 			_ = try completePasswordReset(request: request)
+			response.renderMustache(template: tempOk)
+		} catch {
+			response.renderMustache(template: tempErr, context: ["error":error])
+		}
+	}
+}
+
+extension SAuthHandlers {
+	public func accountValidateWeb(request: HTTPRequest, response: HTTPResponse) {
+		guard let token = request.urlVariables["token"], !token.isEmpty else {
+			return response.completed(status: .notFound)
+		}
+		guard let tempOk = try? sauthDB.getTemplatePath(.accountValidationOk),
+			let tempErr = try? sauthDB.getTemplatePath(.accountValidationError) else {
+				return response.setBody(string: "Templates not configured.").completed(status: .badRequest)
+		}
+		response.setHeader(.contentType, value: "text/html")
+		do {
+			let db = try sauthDB.getDB()
+			let validationTable = db.table(AccountValidationToken.self)
+			let aliasTable = db.table(AliasBrief.self)
+			let clause = validationTable.where(\AccountValidationToken.authId == token)
+			try db.transaction {
+				() -> () in
+				guard let row = try clause.first() else {
+					return response.completed(status: .notFound)
+				}
+				try clause.delete()
+				guard let alias = try aliasTable.where(\AliasBrief.address == row.aliasId).first() else {
+					return response.completed(status: .notFound)
+				}
+				if alias.provisional {
+					let newAlias = AliasBrief(address: alias.address,
+											  account: alias.account,
+											  priority: alias.priority,
+											  flags: alias.flags & ~AliasFlags.provisional.rawValue,
+											  defaultLocale: alias.defaultLocale)
+					try aliasTable.where(\AliasBrief.address == row.aliasId).update(newAlias, setKeys: \.flags)
+				}
+			}
 			response.renderMustache(template: tempOk)
 		} catch {
 			response.renderMustache(template: tempErr, context: ["error":error])
@@ -246,11 +315,5 @@ extension SAuthHandlers {
 			}
 		}
 		return try SAuth(sauthDB).changePasswordUnchecked(address: loweredAddress, password: resetRequest.password)
-	}
-}
-
-extension SAuthHandlers {
-	public func validateAlias(request: HTTPRequest, response: HTTPResponse) {
-		
 	}
 }
