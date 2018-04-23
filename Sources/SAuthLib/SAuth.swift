@@ -118,7 +118,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 	}
 	
 	// create account
-	public func createAccount(address: String, password: String) throws -> (Account, Alias) {
+	public func createAccount(address: String, password: String, fullName: String?) throws -> (Account, Alias) {
 		let db = try getDB()
 		let loweredAddress = address.lowercased()
 		let now = Date().sauthTimeInterval
@@ -133,7 +133,8 @@ public struct SAuth<P: SAuthConfigProvider> {
 			guard existingCount == 0 else {
 				try badAudit(db: db, alias: loweredAddress, action: "create account", error: "Alias already exists.")
 			}
-			let account = Account(id: id, flags: 0, createdAt: now, meta: AccountPublicMeta())
+			let meta = AccountPublicMeta(fullName: fullName)
+			let account = Account(id: id, flags: 0, createdAt: now, meta: meta)
 			try db.table(Account.self).insert(account)
 			let alias = Alias(address: loweredAddress,
 							  account: id,
