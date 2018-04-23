@@ -369,7 +369,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 			let alias = Alias(address: loweredAddress,
 							  account: id,
 							  priority: 1,
-							  flags: AliasFlags.provisional.rawValue,
+							  flags: 0,
 							  pwSalt: nil, pwHash: nil,
 							  defaultLocale: nil)
 			try table.insert(alias)
@@ -407,7 +407,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		guard let alias = try table.where(\Alias.address == loweredAddress).first() else {
 			try badAudit(db: db, alias: loweredAddress, action: "login", error: "Bad account alias.")
 		}
-		guard 0 == (alias.flags & AliasFlags.provisional.rawValue) else {
+		guard !alias.provisional else {
 			try badAudit(db: db, alias: loweredAddress, action: "login", error: "This alias has not been validated.")
 		}
 		let tokensTable = db.table(AccessToken.self)
