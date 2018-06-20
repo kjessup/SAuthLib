@@ -62,7 +62,7 @@ public protocol SAuthConfigProvider {
 
 public struct SAuth<P: SAuthConfigProvider> {
 	let provider: P
-	typealias DB = Database<P.DBConfig>
+	public typealias DB = Database<P.DBConfig>
 	private func getDB() throws -> DB {
 		return try provider.getDB()
 	}
@@ -460,7 +460,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		return account
 	}
 	
-	func goodAudit(db: DB,
+	public func goodAudit(db: DB,
 			   alias: String,
 			   action: String,
 			   account: UUID? = nil,
@@ -474,7 +474,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 		_ = try? db.table(Audit.self).insert(audit)
 	}
 	
-	func badAudit(db: DB,
+	public func badAudit(db: DB,
 			   alias: String,
 			   action: String,
 			   account: UUID? = nil,

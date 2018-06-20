@@ -50,7 +50,11 @@ public struct SAuthHandlers<S: SAuthConfigProvider> {
 																fullName: rrequest.fullName)
 		let token = try addAliasValidationToken(address: alias.address, db: try sauthDB.getDB())
 		let aliasBrief = AliasBrief(alias)
-		try sauthDB.sendEmailValidation(authToken: token, account: account, alias: aliasBrief)
+		do {
+			try sauthDB.sendEmailValidation(authToken: token, account: account, alias: aliasBrief)
+		} catch {
+			try SAuth(sauthDB).badAudit(db: try sauthDB.getDB(), alias: alias.address, action: "email", error: "\(error)")
+		}
 		return aliasBrief
 	}
 	public func login(request: HTTPRequest) throws -> TokenAcquiredResponse {
