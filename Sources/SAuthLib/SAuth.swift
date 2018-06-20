@@ -128,10 +128,10 @@ public struct SAuth<P: SAuthConfigProvider> {
 		guard let (salt, hash) = pwHash(password: password) else {
 			try badAudit(db: db, alias: loweredAddress, action: "create account", error: "Failure hashing password.")
 		}
-		return try db.transaction {
+		let ret: (Account, Alias)? = try db.transaction {
 			let existingCount = try whereMatch.count()
 			guard existingCount == 0 else {
-				try badAudit(db: db, alias: loweredAddress, action: "create account", error: "Alias already exists.")
+				return nil
 			}
 			let meta = AccountPublicMeta(fullName: fullName)
 			let account = Account(id: id, flags: 0, createdAt: now, meta: meta)
@@ -146,6 +146,10 @@ public struct SAuth<P: SAuthConfigProvider> {
 			goodAudit(db: db, alias: loweredAddress, action: "create account", account: account.id)
 			return (account, alias)
 		}
+		guard let r = ret else {
+			try badAudit(db: db, alias: loweredAddress, action: "create account", error: "Alias already exists.")
+		}
+		return r
 	}
 
 	// log in to account
@@ -182,14 +186,14 @@ public struct SAuth<P: SAuthConfigProvider> {
 		guard let (salt, hash) = pwHash(password: password) else {
 			try badAudit(db: db, alias: loweredAddress, action: "change password", error: "Failure hashing password.")
 		}
+		guard let foundAlias = try whereMatch.first() else {
+			try badAudit(db: db, alias: loweredAddress, action: "change password", error: "Bad account alias.")
+		}
 		let alias: Alias = try db.transaction {
-			guard let alias = try whereMatch.first() else {
-				try badAudit(db: db, alias: loweredAddress, action: "change password", error: "Bad account alias.")
-			}
-			let updated = Alias(address: alias.address,
-							  account: alias.account,
-							  priority: alias.priority,
-							  flags: alias.flags,
+			let updated = Alias(address: foundAlias.address,
+							  account: foundAlias.account,
+							  priority: foundAlias.priority,
+							  flags: foundAlias.flags,
 							  pwSalt: salt, pwHash: hash,
 							  defaultLocale: nil)
 			try whereMatch.update(updated, setKeys: \.pwSalt, \.pwHash)
@@ -248,10 +252,12 @@ public struct SAuth<P: SAuthConfigProvider> {
 		guard let (salt, hash) = pwHash(password: password) else {
 			try badAudit(db: db, alias: loweredAddress, action: "add alias", error: "Failure hashing password.")
 		}
+		var doBadAudit = false
 		try db.transaction {
 			let existingCount = try whereMatch.count()
 			guard existingCount == 0 else {
-				try badAudit(db: db, alias: loweredAddress, action: "add alias", error: "Alias already exists.")
+				doBadAudit = true
+				return
 			}
 			let alias = Alias(address: loweredAddress,
 							  account: accountId,
@@ -260,6 +266,9 @@ public struct SAuth<P: SAuthConfigProvider> {
 							  pwSalt: salt, pwHash: hash,
 							  defaultLocale: nil)
 			try table.insert(alias)
+		}
+		if doBadAudit {
+			try badAudit(db: db, alias: loweredAddress, action: "add alias", error: "Alias already exists.")
 		}
 		let account = try db.table(Account.self).where(\Account.id == accountId).first()
 		let privateKey = try provider.getServerPrivateKey()
@@ -359,10 +368,12 @@ public struct SAuth<P: SAuthConfigProvider> {
 		let table = db.table(Alias.self)
 		let id = UUID()
 		var account: Account?
+		var doBadAudit = false
 		try db.transaction {
 			let existingCount = try table.where(\Alias.address == loweredAddress).count()
 			guard existingCount == 0 else {
-				try badAudit(db: db, alias: loweredAddress, action: "create account", provider: provider, error: "Alias already exists.")
+				doBadAudit = true
+				return
 			}
 			let acc = Account(id: id, flags: 0, createdAt: now, meta: meta)
 			account = acc
@@ -374,6 +385,9 @@ public struct SAuth<P: SAuthConfigProvider> {
 							  pwSalt: nil, pwHash: nil,
 							  defaultLocale: nil)
 			try table.insert(alias)
+		}
+		if doBadAudit {
+			try badAudit(db: db, alias: loweredAddress, action: "create account", provider: provider, error: "Alias already exists.")
 		}
 		let tokensTable = db.table(AccessToken.self)
 		try db.transaction {
@@ -451,7 +465,12 @@ public struct SAuth<P: SAuthConfigProvider> {
 			   action: String,
 			   account: UUID? = nil,
 			   provider: String? = nil) {
-		let audit = Audit(alias: alias, action: action, account: account, provider: provider, error: nil, attemptedAt: Date().sauthTimeInterval)
+		let audit = Audit(alias: alias,
+						  action: action,
+						  account: account,
+						  provider: provider,
+						  error: nil,
+						  attemptedAt: Date().sauthTimeInterval)
 		_ = try? db.table(Audit.self).insert(audit)
 	}
 	
@@ -461,7 +480,12 @@ public struct SAuth<P: SAuthConfigProvider> {
 			   account: UUID? = nil,
 			   provider: String? = nil,
 			   error: String) throws -> Never {
-		let audit = Audit(alias: alias, action: action, account: account, provider: provider, error: error, attemptedAt: Date().sauthTimeInterval)
+		let audit = Audit(alias: alias,
+						  action: action,
+						  account: account,
+						  provider: provider,
+						  error: error,
+						  attemptedAt: Date().sauthTimeInterval)
 		try db.table(Audit.self).insert(audit)
 		throw SAuthError(description: error)
 	}

@@ -28,25 +28,6 @@ public struct AuthenticatedRequest {
 	let aliasId: String
 }
 
-public struct MobileDeviceId: Codable {
-	let deviceId: String
-	let deviceType: String
-	let aliasId: String
-	let createdAt: Int
-}
-
-public struct PasswordResetToken: Codable {
-	let aliasId: String
-	let authId: String
-	let expiration: Int
-}
-
-public struct AccountValidationToken: Codable {
-	let aliasId: String
-	let authId: String
-	let createdAt: Int
-}
-
 extension AliasBrief {
 	init(_ alias: Alias) {
 		self.init(address: alias.address,
@@ -170,8 +151,6 @@ extension SAuthHandlers {
 					try table.where(\PasswordResetToken.aliasId == addr).delete()
 					return nil
 				}
-//				let newToken = try self.addPasswordResetToken(address: addr, db: db)
-//				return PasswordResetToken(aliasId: addr, authId: newToken, expiration: 0)
 				return resetToken
 			}
 			guard let newResetToken = newToken else {
