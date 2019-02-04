@@ -28,25 +28,6 @@ public struct AuthenticatedRequest {
 	let aliasId: String
 }
 
-public struct MobileDeviceId: Codable {
-	let deviceId: String
-	let deviceType: String
-	let aliasId: String
-	let createdAt: Int
-}
-
-public struct PasswordResetToken: Codable {
-	let aliasId: String
-	let authId: String
-	let expiration: Int
-}
-
-public struct AccountValidationToken: Codable {
-	let aliasId: String
-	let authId: String
-	let createdAt: Int
-}
-
 extension AliasBrief {
 	init(_ alias: Alias) {
 		self.init(address: alias.address,
@@ -64,10 +45,16 @@ public struct SAuthHandlers<S: SAuthConfigProvider> {
 	}
 	public func register(request: HTTPRequest) throws -> AliasBrief {
 		let rrequest: AuthAPI.RegisterRequest = try request.decode()
-		let (account, alias) = try SAuth(sauthDB).createAccount(address: rrequest.email, password: rrequest.password)
+		let (account, alias) = try SAuth(sauthDB).createAccount(address: rrequest.email,
+																password: rrequest.password,
+																fullName: rrequest.fullName)
 		let token = try addAliasValidationToken(address: alias.address, db: try sauthDB.getDB())
 		let aliasBrief = AliasBrief(alias)
-		try sauthDB.sendEmailValidation(authToken: token, account: account, alias: aliasBrief)
+		do {
+			try sauthDB.sendEmailValidation(authToken: token, account: account, alias: aliasBrief)
+		} catch {
+			try SAuth(sauthDB).badAudit(db: try sauthDB.getDB(), alias: alias.address, action: "email", error: "\(error)")
+		}
 		return aliasBrief
 	}
 	public func login(request: HTTPRequest) throws -> TokenAcquiredResponse {
@@ -168,8 +155,7 @@ extension SAuthHandlers {
 					try table.where(\PasswordResetToken.aliasId == addr).delete()
 					return nil
 				}
-				let newToken = try self.addPasswordResetToken(address: addr, db: db)
-				return PasswordResetToken(aliasId: addr, authId: newToken, expiration: 0)
+				return resetToken
 			}
 			guard let newResetToken = newToken else {
 				throw HTTPResponseError(status: .notFound, description: "Token not found.")
