@@ -191,7 +191,7 @@ public struct SAuth<P: SAuthConfigProvider> {
 							  flags: alias.flags,
 							  pwSalt: salt, pwHash: hash,
 							  defaultLocale: nil)
-			try whereMatch.update(updated, setKeys: \.pwSalt, \.pwHash)
+			try whereMatch.update(updated, setKeys: \Alias.pwSalt, \Alias.pwHash)
 			return updated
 		}
 		guard !alias.provisional else {
