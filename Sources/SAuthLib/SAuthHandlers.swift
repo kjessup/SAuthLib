@@ -13,6 +13,8 @@ import PerfectNotifications
 import PerfectMustache
 import SAuthCodables
 
+public let authCookieName = "sauth_token" // !FIX!
+
 let passwordResetTokenExpirationIntervalSeconds = 15 * 60
 
 public extension Date {
@@ -65,9 +67,10 @@ public struct SAuthHandlers<S: SAuthConfigProvider> {
 		try table.where(\PasswordResetToken.aliasId == rrequest.email.lowercased()).delete()
 		return tokenResponse
 	}
-	public func authenticated(request: HTTPRequest) throws -> AuthenticatedRequest {
+	
+	private func getToken(authorization request: HTTPRequest) -> String? {
 		guard let bearer = request.header(.authorization), !bearer.isEmpty else {
-			throw HTTPResponseError(status: .unauthorized, description: "No authorization header provided.")
+			return nil
 		}
 		let prefix = "Bearer "
 		let token: String
@@ -75,6 +78,20 @@ public struct SAuthHandlers<S: SAuthConfigProvider> {
 			token = String(bearer[bearer.index(bearer.startIndex, offsetBy: prefix.count)...])
 		} else {
 			token = bearer
+		}
+		return token
+	}
+	
+	private func getToken(cookie request: HTTPRequest) -> String? {
+		guard let token = request.cookies.first( where: { $0.0 == authCookieName })?.1, !token.isEmpty else {
+			return nil
+		}
+		return token
+	}
+	
+	public func authenticated(request: HTTPRequest) throws -> AuthenticatedRequest {
+		guard let token = getToken(authorization: request) ?? getToken(cookie: request) else {
+			throw HTTPResponseError(status: .unauthorized, description: "No authorization provided.")
 		}
 		do {
 			if let jwtVer = JWTVerifier(token) {
