@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import PerfectHTTP
+import PerfectNIOCompat
 import SAuthCodables
 
 public enum OAuthProvider: String {
